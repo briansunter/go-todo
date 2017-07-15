@@ -7,168 +7,185 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/jinzhu/gorm"
 	"net/http"
+	"strconv"
 	"time"
 )
 
-type Task struct {
-	Id            int64     `json:"id"`
-	Name          string    `json:"name"`
-	Description   string    `json:"description"`
-	CompletedDate time.Time `json:"completion_date"`
-	DueDate       time.Time `json:"due_date"`
-	CreatedAt     time.Time `json:"created_at_date"`
+type Todo struct {
+	Id            int64          `json:"id"`
+	Name          string         `json:"name"`
+	Description   string         `json:"description,omitempty"`
+	CompletedDate mysql.NullTime `json:"completion_date,omitempty"`
+	DueDate       mysql.NullTime `json:"due_date",omitempty`
+	CreatedAt     mysql.NullTime `json:"created_at_date,omitempty"`
 }
 
 func main() {
-	db, err := gorm.Open("mysql", "root:root@/todo?charset=utf8&parseTime=True")
+	db, err := gorm.Open("mysql", "todo:some_pass@/todos?charset=utf8&parseTime=True")
 	if err != nil {
-		fmt.Println(err.Error())
-		return
+		panic(err.Error())
 	}
 
-	db.AutoMigrate(&Task{})
+	if db.HasTable(&Todo{}) == false {
+		fmt.Println("Creating todos table")
+
+		err := db.CreateTable(&Todo{}).Error
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	err = db.AutoMigrate(&Todo{}).Error
+	if err != nil {
+		panic(err)
+	}
 
 	r := mux.NewRouter().StrictSlash(false)
-	tasks := r.Path("/tasks").Subrouter()
-	tasks.Methods("GET").Handler(ShowTasks(&db))
-	tasks.Methods("POST").Handler(CreateTask(&db))
+	todos := r.Path("/todos").Subrouter()
+	todos.Methods("GET").Handler(ShowTodos(db))
+	todos.Methods("POST").Handler(CreateTodo(db))
 
-	task := r.PathPrefix("/tasks/{id}").Subrouter()
-	task.Methods("PUT").Path("/complete").Handler(TaskToggleComplete(&db))
-	task.Methods("PUT").Handler(UpdateTask(&db))
+	todo := r.PathPrefix("/todos/{id}").Subrouter()
+	todo.Methods("PUT").Path("/complete").Handler(TodoToggleComplete(db))
+	todo.Methods("PUT").Handler(UpdateTodo(db))
 
 	r.PathPrefix("/").Handler(http.FileServer(http.Dir("./static/")))
 
 	http.ListenAndServe(":8080", r)
 }
 
-func ShowTasks(db *gorm.DB) http.Handler {
+func ShowTodos(db *gorm.DB) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		allTasks := []Task{}
-		err := db.Find(&allTasks).Error
-		if err != nil && err != gorm.RecordNotFound {
-			panic(err)
+		allTodos := []Todo{}
+		err := db.Find(&allTodos).Error
+		if err != nil {
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
+			return
 		}
 
-		js, err := json.Marshal(allTasks)
+		js, err := json.Marshal(allTodos)
 		if err != nil {
-			panic(err)
+			http.Error(rw, err.Error(), http.StatusBadRequest)
+			return
 		}
+
 		rw.Header().Set("Content-Type", "application/json")
 		rw.Write(js)
 	})
 }
 
-func CreateTask(db *gorm.DB) http.Handler {
+func CreateTodo(db *gorm.DB) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		decoder := json.NewDecoder(r.Body)
-		var newTask Task
-
-		err := decoder.Decode(&newTask)
-
+		var newTodo Todo
+		err := decoder.Decode(&newTodo)
 		if err != nil {
-			http.Error(rw, err.Error(), 403)
+			http.Error(rw, err.Error(), http.StatusBadRequest)
+			return
+		}
+		err = db.Save(&newTodo).Error
+		if err != nil {
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		err = db.Save(&newTask).Error
+		js, err := json.Marshal(newTodo)
 		if err != nil {
-			http.Error(rw, err.Error(), 403)
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
 			return
-		}
-
-		js, err := json.Marshal(newTask)
-
-		if err != nil {
-			panic(err)
 		}
 
 		rw.Header().Set("Content-Type", "application/json")
 		rw.Write(js)
-
 	})
 }
 
-func UpdateTask(db *gorm.DB) http.Handler {
+const missingIDErrorMessage string = "Missing or malformed id field"
+
+func UpdateTodo(db *gorm.DB) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		vars := mux.Vars(r)
+		idOfTodoToUpdate, err := strconv.Atoi(vars["id"])
+		if err != nil {
+			http.Error(rw, missingIDErrorMessage, http.StatusBadRequest)
+			return
+		}
 
-		idOfTaskToUpdate := vars["id"]
-		var existingTask Task
-		err := db.First(&existingTask, idOfTaskToUpdate).Error
-
-		if err == gorm.RecordNotFound {
-			http.Error(rw, err.Error(), 404)
+		var existingTodo Todo
+		err = db.First(&existingTodo, idOfTodoToUpdate).Error
+		if err == gorm.ErrRecordNotFound {
+			http.Error(rw, err.Error(), http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		decoder := json.NewDecoder(r.Body)
-		var taskToUpdate Task
-
-		err = decoder.Decode(&taskToUpdate)
-
+		var todoToUpdate Todo
+		err = decoder.Decode(&todoToUpdate)
 		if err != nil {
-			http.Error(rw, err.Error(), 403)
+			http.Error(rw, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		err = db.Save(&taskToUpdate).Error
+		err = db.Save(&todoToUpdate).Error
+		if err != nil {
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		js, err := json.Marshal(&todoToUpdate)
+		if err != nil {
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
+		}
+
+		rw.Header().Set("Content-Type", "application/json")
+		rw.Write(js)
+	})
+}
+
+func TodoToggleComplete(db *gorm.DB) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		idOfTodoToUpdate, err := strconv.Atoi(vars["id"])
+		if err != nil {
+			http.Error(rw, missingIDErrorMessage, http.StatusBadRequest)
+			return
+		}
+
+		var todoToComplete Todo
+		err = db.Find(&todoToComplete, idOfTodoToUpdate).Error
+		if err == gorm.ErrRecordNotFound {
+			http.Error(rw, err.Error(), http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if todoToComplete.CompletedDate.Valid == false {
+			todoToComplete.CompletedDate.Time = time.Now()
+		} else {
+			todoToComplete.CompletedDate.Time = time.Time{}
+		}
+
+		err = db.Save(&todoToComplete).Error
+		if err != nil {
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		js, err := json.Marshal(todoToComplete)
 
 		if err != nil {
 			http.Error(rw, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		js, err := json.Marshal(&taskToUpdate)
-
-		if err != nil {
-			panic(err)
-
-		}
 
 		rw.Header().Set("Content-Type", "application/json")
 		rw.Write(js)
-
-	})
-
-}
-
-func TaskToggleComplete(db *gorm.DB) http.Handler {
-	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		vars := mux.Vars(r)
-
-		idOfTaskToUpdate := vars["id"]
-
-		var taskToComplete Task
-		err := db.Find(&taskToComplete, idOfTaskToUpdate).Error
-		if err != nil {
-
-			if err == gorm.RecordNotFound {
-				http.Error(rw, err.Error(), 404)
-			} else {
-				panic(err)
-			}
-		}
-
-		if taskToComplete.CompletedDate.IsZero() {
-			taskToComplete.CompletedDate = time.Now()
-		} else {
-			taskToComplete.CompletedDate = time.Time{}
-		}
-
-		err = db.Save(&taskToComplete).Error
-
-		if err != nil {
-			panic(err)
-		}
-
-		js, err := json.Marshal(taskToComplete)
-
-		if err != nil {
-			panic(err)
-		}
-
-		rw.Header().Set("Content-Type", "application/json")
-		rw.Write(js)
-
 	})
 }

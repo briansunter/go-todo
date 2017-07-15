@@ -1,11 +1,11 @@
 var TodoList = React.createClass({
-  loadTasksFromServer : function(){
+  loadTodosFromServer : function(){
     $.ajax({
       url: this.props.listUrl,
       type: 'GET',
       dataType: 'json',
       success: function (data, textStatus, jqXHR) {
-        this.setState({tasks:data});
+        this.setState({todos:data});
         console.log(data);
       }.bind(this),
       error: function (jqXHR, textStatus, errorThrown) {
@@ -14,15 +14,15 @@ var TodoList = React.createClass({
     });
   },
   getInitialState : function(){
-    return {tasks : []};
+    return {todos : []};
   },
   componentDidMount: function() {
-    this.loadTasksFromServer();
+    this.loadTodosFromServer();
   },
   render: function(){
-    var todoNodes = this.state.tasks.map(function(task){
+    var todoNodes = this.state.todos.map(function(todo){
       return (
-      <TodoTask task={task}></TodoTask>
+      <TodoTodo todo={todo}></TodoTodo>
       );
     });
 
@@ -35,6 +35,6 @@ var TodoList = React.createClass({
 });
 
 React.render(
-  <TodoList listName="Test Todo List" listUrl="http://localhost:8080/tasks"/>,
+  <TodoList listName="Test Todo List" listUrl="http://localhost:8080/todos"/>,
   document.getElementById('content')
 );
